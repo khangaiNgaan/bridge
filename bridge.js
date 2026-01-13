@@ -41,7 +41,7 @@ function connect() {
 	});
 
 	ws.on('open', () => {
-		console.log('[WS] 已连接 CAFE1CHAT');
+		console.log('[WS] 已连接');
         flushMsgQueue();
 	});
 
@@ -107,7 +107,7 @@ function startTailing() {
     console.log('[Tail] 正在运行...');
     
     // using Follow ('-F') mode
-    // only get msg after bridge is launched ('-n', '0')
+    // only get msg sent after bridge has started ('-n', '0')
     const tailProc = spawn('tail', ['-F', '-n', '0', CONFIG.LOG_FILE]);
 
     tailProc.stderr.on('data', (data) => {
@@ -180,6 +180,6 @@ function handleLogLine(line) {
     }
 }
 
-// launch
+// start
 connect();
 startTailing();
