@@ -4,6 +4,47 @@ require('dotenv').config();
 const { spawn } = require('child_process');
 const readline = require('readline');
 const WebSocket = require('ws');
+const fs = require('fs');
+const path = require('path');
+
+// logging setup
+const LOG_DIR = path.join(__dirname, 'logs');
+if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR);
+}
+
+function getLogFile() {
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
+    return path.join(LOG_DIR, `${dateStr}.log`);
+}
+
+function writeToLogFile(args) {
+    const now = new Date();
+    const timestamp = now.toTimeString().split(' ')[0]; // HH:mm:ss
+    const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+    const logLine = `[${timestamp}] ${message}\n`;
+    
+    try {
+        fs.appendFileSync(getLogFile(), logLine);
+    } catch (err) {
+        process.stderr.write(`无法写入日志文件: ${err.message}\n`);
+    }
+}
+
+// override console.log and console.error
+const originalLog = console.log;
+const originalError = console.error;
+
+console.log = (...args) => {
+    originalLog(...args);
+    writeToLogFile(args);
+};
+
+console.error = (...args) => {
+    originalError(...args);
+    writeToLogFile(args);
+};
 
 // configs
 
@@ -111,7 +152,7 @@ function startTailing() {
     const tailProc = spawn('tail', ['-F', '-n', '0', CONFIG.LOG_FILE]);
 
     tailProc.stderr.on('data', (data) => {
-        console.error(`[Tail Error]: ${data}`);
+        console.error(`[Tail] ERROR: ${data}`);
     });
 
     // using readline
@@ -157,6 +198,14 @@ function handleLogLine(line) {
     if (leaveMatch) {
         const player = leaveMatch[1];
         sendToChatroom(`[INFO] ${player} left the game`);
+        return;
+    }
+
+    // auto welcome message
+    const welcomeMatch = line.match(/\[\d{2}:\d{2}:\d{2}\] \[Server thread\/INFO\]: Hey (\w+), sunshine! Just wanted to send a little virtual hug your way\. Hope your day is as awesome as you are! Have a fantastic time here on Salmonized Workspace!/);
+    if (welcomeMatch) {
+        const player = welcomeMatch[1];
+        sendToChatroom(`[INFO] Hey ${player}, sunshine! Just wanted to send a little virtual hug your way. Hope your day is as awesome as you are! Have a fantastic time here on Salmonized Workspace!`);
         return;
     }
 

@@ -1,0 +1,16 @@
+[Unit]
+Description=Bridge Node.js Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/data/BRIDGE
+ExecStart=/usr/bin/node bridge.js
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
