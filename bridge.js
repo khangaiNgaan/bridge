@@ -13,9 +13,16 @@ if (!fs.existsSync(LOG_DIR)) {
     fs.mkdirSync(LOG_DIR);
 }
 
+function formatDate(dateObj) {
+    const year = dateObj.getFullYear();
+    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const day = String(dateObj.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
 function getLogFile() {
     const now = new Date();
-    const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
+    const dateStr = formatDate(now); // YYYY-MM-DD
     return path.join(LOG_DIR, `${dateStr}.log`);
 }
 
