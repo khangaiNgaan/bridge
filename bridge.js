@@ -6,6 +6,8 @@ const readline = require('readline');
 const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+const { Rcon } = require('rcon-client');
 
 // logging setup
 const LOG_DIR = path.join(__dirname, 'logs');
@@ -56,9 +58,17 @@ console.error = (...args) => {
 // configs
 
 const CONFIG = {
+    // configs for mc to chatroom bridge
 	WS_URL: process.env.WS_URL,
 	LOG_FILE: process.env.LOG_FILE,
-	COOKIE: process.env.COOKIE 
+	COOKIE: process.env.COOKIE,
+    // configs for chatroom to mc bridge
+    PORT: process.env.PORT,
+    BRIDGE_TOKEN: process.env.BRIDGE_TOKEN,
+    RCON_HOST: process.env.RCON_HOST,
+    RCON_PORT: parseInt(process.env.RCON_PORT, 10),
+    RCON_PASSWORD: process.env.RCON_PASSWORD,
+    API_URL: process.env.API_URL
 };
 
 if (!CONFIG.WS_URL || !CONFIG.LOG_FILE || !CONFIG.COOKIE) {
@@ -69,6 +79,70 @@ if (!CONFIG.WS_URL || !CONFIG.LOG_FILE || !CONFIG.COOKIE) {
 console.log(`[BRIDGE] 正在启动...`);
 console.log(`[BRIDGE] 监控日志: ${CONFIG.LOG_FILE}`);
 console.log(`[BRIDGE] 目标地址: ${CONFIG.WS_URL}`);
+
+// I. HTTP Server for receiving RCON commands 
+// (get req from cloudflare tunnel for streaming chatroom msg to mc server)
+
+const httpServer = http.createServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/') {
+        const authHeader = req.headers['authorization'];
+        if (CONFIG.BRIDGE_TOKEN && authHeader !== `Bearer ${CONFIG.BRIDGE_TOKEN}`) {
+            res.writeHead(401);
+            res.end('Unauthorized');
+            return;
+        }
+
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const data = JSON.parse(body);
+                if (data.command) {
+                    console.log(`[HTTP] 收到 RCON 指令: ${data.command}`);
+                    await sendRconCommand(data.command);
+                    res.writeHead(200);
+                    res.end('OK');
+                } else {
+                    res.writeHead(400);
+                    res.end('Missing command');
+                }
+            } catch (e) {
+                console.error(`[HTTP] Error: ${e.message}`);
+                res.writeHead(500);
+                res.end('Internal Error');
+            }
+        });
+    } else {
+        res.writeHead(404);
+        res.end('Not Found');
+    }
+});
+
+httpServer.listen(CONFIG.PORT, '127.0.0.1', () => {
+    console.log(`[HTTP] Server listening on 127.0.0.1:${CONFIG.PORT}`);
+});
+
+async function sendRconCommand(command) {
+    if (!CONFIG.RCON_PASSWORD) {
+        console.error('[RCON] 未配置 RCON_PASSWORD, 无法发送指令');
+        return;
+    }
+    try {
+        const rcon = await Rcon.connect({
+            host: CONFIG.RCON_HOST,
+            port: CONFIG.RCON_PORT,
+            password: CONFIG.RCON_PASSWORD
+        });
+        const response = await rcon.send(command);
+        console.log(`[RCON] Response: ${response}`);
+        await rcon.end();
+    } catch (error) {
+        console.error(`[RCON] Failed to send command: ${error.message}`);
+    }
+}
+
+// II. WebSocket & Log Tailing 
+// (stream chat and info to chatroom)
 
 let ws;
 let msgQueue = [];
@@ -235,6 +309,119 @@ function handleLogLine(line) {
         return;
     }
 }
+
+// III. Cookie Auto-Renewal
+// (check JWT exp in cookie, if less than 10 days, perform renewal flow)
+
+function parseJwt(token) {
+    try {
+        const base64Url = token.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        return JSON.parse(jsonPayload);
+    } catch (e) {
+        return null;
+    }
+}
+
+async function renewCookieIfNeeded() {
+    console.log('[Auto-Renew] 检查 Cookie 有效期...');
+    
+    // Cookie format: session=eyJ...; ...
+    // Extract the JWT part
+    const sessionTokenMatch = CONFIG.COOKIE.match(/session=([^;]+)/);
+    // If not found, maybe the whole string is the token (unlikely based on header format, but possible in env)
+    const sessionToken = sessionTokenMatch ? sessionTokenMatch[1] : CONFIG.COOKIE;
+
+    const payload = parseJwt(sessionToken);
+    if (!payload || !payload.exp) {
+        console.error('[Auto-Renew] JWT 解析失败, 跳过续签检查');
+        return;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const timeLeft = payload.exp - now;
+    const daysLeft = timeLeft / (60 * 60 * 24);
+
+    console.log(`[Auto-Renew] Cookie 剩余有效期: ${daysLeft.toFixed(2)} 天`);
+
+    if (daysLeft < 10) {
+        console.log('[Auto-Renew] Cookie 剩余有效期不足 10 天, 开始续签流程...');
+        await performRenewal();
+    }
+}
+
+async function performRenewal() {
+    try {
+        // 1. Get Access Token
+        console.log('[Auto-Renew] 1. 正在取得 Access Token...');
+        const tokenRes = await fetch(`${CONFIG.API_URL}/api/tokens`, {
+            method: 'POST',
+            headers: {
+                'Cookie': CONFIG.COOKIE,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ label: `Bridge-AutoRenew-${Date.now()}` })
+        });
+
+        if (!tokenRes.ok) throw new Error(`获取 AT 失败: ${tokenRes.status}`);
+        const tokenData = await tokenRes.json();
+        if (!tokenData.success || !tokenData.token) throw new Error('AT 响应无效');
+        
+        const accessToken = tokenData.token;
+        console.log('[Auto-Renew] Access Token 获取成功');
+
+        // 2. Login with Access Token to get new Cookie
+        console.log('[Auto-Renew] 2. 使用 Access Token 换取新 Cookie...');
+        const loginRes = await fetch(`${CONFIG.API_URL}/api/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                username: 'console',
+                access_token: accessToken 
+            })
+        });
+
+        if (!loginRes.ok) throw new Error(`登录失败: ${loginRes.status}`);
+        
+        // Extract set-cookie
+        const setCookieHeader = loginRes.headers.get('set-cookie');
+        if (!setCookieHeader) throw new Error('登录响应未包含 Set-Cookie 头');
+
+        // Simple parsing to get the session part
+        // Set-Cookie: session=...; Max-Age=...
+        const newSessionPart = setCookieHeader.split(';')[0]; 
+        
+        console.log('[Auto-Renew] 新 Cookie 获取成功!');
+        
+        // 3. Update State
+        CONFIG.COOKIE = newSessionPart; // Update in memory
+        
+        // Update .env file
+        const envPath = path.join(__dirname, '.env');
+        if (fs.existsSync(envPath)) {
+            let envContent = fs.readFileSync(envPath, 'utf8');
+            // Replace existing COOKIE line
+            if (envContent.includes('COOKIE=')) {
+                envContent = envContent.replace(/COOKIE=.*/, `COOKIE=${newSessionPart}`);
+            } else {
+                envContent += `\nCOOKIE=${newSessionPart}`;
+            }
+            fs.writeFileSync(envPath, envContent);
+            console.log('[Auto-Renew] .env 文件已更新');
+        } else {
+             console.log('[Auto-Renew] .env 文件不存在, 仅更新内存状态');
+        }
+
+    } catch (err) {
+        console.error(`[Auto-Renew] 续签失败: ${err.message}`);
+    }
+}
+
+setInterval(renewCookieIfNeeded, 24 * 60 * 60 * 1000);
+renewCookieIfNeeded();
 
 // start
 connect();
