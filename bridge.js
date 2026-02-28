@@ -361,9 +361,9 @@ async function performRenewal() {
             method: 'POST',
             headers: {
                 'Cookie': CONFIG.COOKIE,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/x-www-form-urlencoded'
             },
-            body: JSON.stringify({ label: `Bridge-AutoRenew-${Date.now()}` })
+            body: new URLSearchParams({ label: `Bridge-AutoRenew-${Date.now()}` })
         });
 
         if (!tokenRes.ok) throw new Error(`获取 AT 失败: ${tokenRes.status}`);
@@ -377,8 +377,8 @@ async function performRenewal() {
         console.log('[Auto-Renew] 2. 使用 Access Token 换取新 Cookie...');
         const loginRes = await fetch(`${CONFIG.API_URL}/api/login`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ 
                 username: 'console',
                 access_token: accessToken 
             })
