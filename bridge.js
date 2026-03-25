@@ -357,7 +357,7 @@ async function performRenewal() {
     try {
         // 1. Get Access Token
         console.log('[Auto-Renew] 1. 正在取得 Access Token...');
-        const tokenRes = await fetch(`${CONFIG.API_URL}/api/tokens`, {
+        const tokenRes = await fetch(`${CONFIG.API_URL}/api/oats`, {
             method: 'POST',
             headers: {
                 'Cookie': CONFIG.COOKIE,
@@ -366,9 +366,9 @@ async function performRenewal() {
             body: new URLSearchParams({ label: `Bridge-AutoRenew-${Date.now()}` })
         });
 
-        if (!tokenRes.ok) throw new Error(`获取 AT 失败: ${tokenRes.status}`);
+        if (!tokenRes.ok) throw new Error(`获取 OAT 失败: ${tokenRes.status}`);
         const tokenData = await tokenRes.json();
-        if (!tokenData.success || !tokenData.token) throw new Error('AT 响应无效');
+        if (!tokenData.success || !tokenData.token) throw new Error('OAT 响应无效');
         
         const accessToken = tokenData.token;
         console.log('[Auto-Renew] Access Token 获取成功');
