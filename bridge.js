@@ -31,7 +31,8 @@ function getLogFile() {
 function writeToLogFile(args) {
     const now = new Date();
     const timestamp = now.toTimeString().split(' ')[0]; // HH:mm:ss
-    const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+    const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg)
+                                                            : arg).join(' ');
     const logLine = `[${timestamp}] ${message}\n`;
     
     try {
@@ -68,7 +69,8 @@ const CONFIG = {
     RCON_HOST: process.env.RCON_HOST,
     RCON_PORT: parseInt(process.env.RCON_PORT, 10),
     RCON_PASSWORD: process.env.RCON_PASSWORD,
-    API_URL: process.env.API_URL
+    API_URL: process.env.API_URL,
+    SELF_URL: process.env.SELF_URL
 };
 
 if (!CONFIG.WS_URL || !CONFIG.LOG_FILE || !CONFIG.COOKIE) {
@@ -81,12 +83,19 @@ console.log(`[BRIDGE] 监控日志: ${CONFIG.LOG_FILE}`);
 console.log(`[BRIDGE] 目标地址: ${CONFIG.WS_URL}`);
 
 // I. HTTP Server for receiving RCON commands 
-// (get req from cloudflare tunnel for streaming chatroom msg to mc server)
 
 const httpServer = http.createServer(async (req, res) => {
+    // keepalive ping from self, return immediately
+    if (req.method === 'GET' && req.url === '/ping') {
+        res.writeHead(200);
+        res.end('pong');
+        return;
+    }
+
     if (req.method === 'POST' && req.url === '/') {
         const authHeader = req.headers['authorization'];
-        if (CONFIG.BRIDGE_TOKEN && authHeader !== `Bearer ${CONFIG.BRIDGE_TOKEN}`) {
+        if (CONFIG.BRIDGE_TOKEN &&
+            authHeader !== `Bearer ${CONFIG.BRIDGE_TOKEN}`) {
             res.writeHead(401);
             res.end('Unauthorized');
             return;
@@ -122,6 +131,22 @@ httpServer.listen(CONFIG.PORT, '127.0.0.1', () => {
     console.log(`[HTTP] Server listening on 127.0.0.1:${CONFIG.PORT}`);
 });
 
+// keep Cloudflare Tunnel connection warm by pinging self via Tunnel
+async function keepTunnelAlive() {
+    if (!CONFIG.SELF_URL) return;
+    try {
+        const res = await fetch(`${CONFIG.SELF_URL}/ping`,
+                                { signal: AbortSignal.timeout(8000) });
+        console.log(`[Ping] Tunnel keepalive: ${res.status}`);
+    } catch (e) {
+        console.error(`[Ping] Tunnel keepalive failed: ${e.message}`);
+    }
+}
+
+// ping once on startup, then every 4 minutes
+keepTunnelAlive();
+setInterval(keepTunnelAlive, 4 * 60 * 1000);
+
 async function sendRconCommand(command) {
     if (!CONFIG.RCON_PASSWORD) {
         console.error('[RCON] 未配置 RCON_PASSWORD, 无法发送指令');
@@ -151,7 +176,8 @@ let idleTimer = null;
 // WebSocket
 function connect() {
     // if already connected or is connecting
-    if ( ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    if ( ws && (ws.readyState === WebSocket.OPEN ||
+         ws.readyState === WebSocket.CONNECTING)) {
         return;
     }
 
@@ -311,7 +337,6 @@ function handleLogLine(line) {
 }
 
 // III. Cookie Auto-Renewal
-// (check JWT exp in cookie, if less than 10 days, perform renewal flow)
 
 function parseJwt(token) {
     try {
@@ -332,7 +357,6 @@ async function renewCookieIfNeeded() {
     // Cookie format: session=eyJ...; ...
     // Extract the JWT part
     const sessionTokenMatch = CONFIG.COOKIE.match(/session=([^;]+)/);
-    // If not found, maybe the whole string is the token (unlikely based on header format, but possible in env)
     const sessionToken = sessionTokenMatch ? sessionTokenMatch[1] : CONFIG.COOKIE;
 
     const payload = parseJwt(sessionToken);
